@@ -22,6 +22,8 @@ Then build the sing-box rule-set JSON with:
 
 ```bash
 bun run ./src/index.ts --output rules/category-ru.json
+bun run rule-set:format
+bun run rule-set:check
 ```
 
 To compile that JSON rule-set to sing-box's binary `.srs` format:
@@ -50,7 +52,7 @@ The converter:
 Automation:
 
 - `.github/workflows/update-rule-set.yml` runs every day at `00:00` UTC and can also be started manually with `workflow_dispatch`
-- the workflow regenerates `rules/category-ru.json`, compiles `rules/category-ru.srs`, and commits the updated files back to the repository
+- the workflow regenerates `rules/category-ru.json`, formats and verifies it with Biome, compiles `rules/category-ru.srs`, and commits the updated files back to the repository
 
 Run the full verification suite with:
 

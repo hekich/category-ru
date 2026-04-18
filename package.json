@@ -6,6 +6,8 @@
 	"scripts": {
 		"lint": "bunx biome check .",
 		"lint:fix": "bunx biome check --write .",
+		"rule-set:check": "bunx biome check rules/category-ru.json",
+		"rule-set:format": "bunx biome check --write rules/category-ru.json",
 		"typecheck": "bunx tsc --noEmit",
 		"test": "bun test",
 		"check": "bun run lint && bun run typecheck && bun run test"

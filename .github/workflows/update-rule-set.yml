@@ -59,6 +59,9 @@ jobs:
       - name: Generate sing-box rule-set JSON
         run: bun run ./src/index.ts --output "${{ env.RULE_SET_JSON }}"
 
+      - name: Canonicalize generated rule-set JSON
+        run: bun run rule-set:format && bun run rule-set:check
+
       - name: Validate generated JSON
         shell: bash
         run: |

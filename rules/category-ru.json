@@ -2,9 +2,7 @@
 	"version": 3,
 	"rules": [
 		{
-			"domain": [
-				"mvideo.edna.io"
-			],
+			"domain": ["mvideo.edna.io"],
 			"domain_suffix": [
 				"1018213540.rsc.cdn77.org",
 				"1cfresh.com",
