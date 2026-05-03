@@ -15,8 +15,6 @@ concurrency:
 env:
   RULE_SET_JSON: rules/sing-box/category-ru.json
   RULE_SET_BINARY: rules/sing-box/category-ru.srs
-  LEGACY_RULE_SET_JSON: rules/category-ru.json
-  LEGACY_RULE_SET_BINARY: rules/category-ru.srs
   MIHOMO_RULE_SET_TEXT: rules/mihomo/category-ru.lst
   MIHOMO_RULE_SET_BINARY: rules/mihomo/category-ru.mrs
   BUN_VERSION: 1.3.12
@@ -65,7 +63,7 @@ jobs:
           "$HOME/.local/bin/sing-box" version
 
       - name: Generate rule-set text artifacts
-        run: bun run ./src/index.ts --output "${{ env.RULE_SET_JSON }}" --compat-output "${{ env.LEGACY_RULE_SET_JSON }}" --mihomo-output "${{ env.MIHOMO_RULE_SET_TEXT }}"
+        run: bun run ./src/index.ts --output "${{ env.RULE_SET_JSON }}" --mihomo-output "${{ env.MIHOMO_RULE_SET_TEXT }}"
 
       - name: Canonicalize generated rule-set JSON
         run: bun run rule-set:format && bun run rule-set:check
@@ -75,16 +73,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s "${RULE_SET_JSON}"
-          test -s "${LEGACY_RULE_SET_JSON}"
-          cmp -s "${RULE_SET_JSON}" "${LEGACY_RULE_SET_JSON}"
           node -e "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))" "${RULE_SET_JSON}"
-          node -e "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))" "${LEGACY_RULE_SET_JSON}"
 
       - name: Compile rule-set to binary .srs
         run: sing-box rule-set compile --output "${{ env.RULE_SET_BINARY }}" "${{ env.RULE_SET_JSON }}"
-
-      - name: Copy compatibility sing-box binary
-        run: cp "${RULE_SET_BINARY}" "${LEGACY_RULE_SET_BINARY}"
 
       - name: Install Mihomo CLI
         shell: bash
@@ -112,10 +104,6 @@ jobs:
           set -euo pipefail
           test -s "${RULE_SET_JSON}"
           test -s "${RULE_SET_BINARY}"
-          test -s "${LEGACY_RULE_SET_JSON}"
-          test -s "${LEGACY_RULE_SET_BINARY}"
-          cmp -s "${RULE_SET_JSON}" "${LEGACY_RULE_SET_JSON}"
-          cmp -s "${RULE_SET_BINARY}" "${LEGACY_RULE_SET_BINARY}"
           test -s "${MIHOMO_RULE_SET_TEXT}"
           test -s "${MIHOMO_RULE_SET_BINARY}"
 
@@ -135,7 +123,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${RULE_SET_JSON}" "${RULE_SET_BINARY}" "${LEGACY_RULE_SET_JSON}" "${LEGACY_RULE_SET_BINARY}" "${MIHOMO_RULE_SET_TEXT}" "${MIHOMO_RULE_SET_BINARY}"
+          git add "${RULE_SET_JSON}" "${RULE_SET_BINARY}" "${MIHOMO_RULE_SET_TEXT}" "${MIHOMO_RULE_SET_BINARY}"
 
           if git diff --cached --quiet; then
             echo "No rule-set changes to commit."

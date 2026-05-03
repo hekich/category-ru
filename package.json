@@ -6,9 +6,9 @@
 	"scripts": {
 		"lint": "bunx biome check .",
 		"lint:fix": "bunx biome check --write .",
-		"rule-set:generate": "bun run ./src/index.ts --output rules/sing-box/category-ru.json --compat-output rules/category-ru.json --mihomo-output rules/mihomo/category-ru.lst",
-		"rule-set:check": "bunx biome check rules/sing-box/category-ru.json rules/category-ru.json",
-		"rule-set:format": "bunx biome check --write rules/sing-box/category-ru.json rules/category-ru.json",
+		"rule-set:generate": "bun run ./src/index.ts --output rules/sing-box/category-ru.json --mihomo-output rules/mihomo/category-ru.lst",
+		"rule-set:check": "bunx biome check rules/sing-box/category-ru.json",
+		"rule-set:format": "bunx biome check --write rules/sing-box/category-ru.json",
 		"typecheck": "bunx tsc --noEmit",
 		"test": "bun test",
 		"check": "bun run lint && bun run typecheck && bun run test"

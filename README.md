@@ -29,14 +29,12 @@ bun run rule-set:check
 This writes:
 
 - `rules/sing-box/category-ru.json` for sing-box
-- `rules/category-ru.json` as a compatibility copy for existing sing-box users
 - `rules/mihomo/category-ru.lst` for Mihomo rule providers with `format: text` and `behavior: domain`
 
 To compile that JSON rule-set to sing-box's binary `.srs` format:
 
 ```bash
 sing-box rule-set compile --output rules/sing-box/category-ru.srs rules/sing-box/category-ru.json
-cp rules/sing-box/category-ru.srs rules/category-ru.srs
 ```
 
 To compile the Mihomo text rule-set to Mihomo's binary `.mrs` format:
@@ -48,7 +46,7 @@ mihomo convert-ruleset domain text rules/mihomo/category-ru.lst rules/mihomo/cat
 You can still override the config from the CLI when needed:
 
 ```bash
-bun run ./src/index.ts --url https://example.com/list-1 --url https://example.com/list-2 --output output/sing-box/category-ru.json --compat-output output/category-ru.json --mihomo-output output/mihomo/category-ru.lst
+bun run ./src/index.ts --url https://example.com/list-1 --url https://example.com/list-2 --output output/sing-box/category-ru.json --mihomo-output output/mihomo/category-ru.lst
 ```
 
 The converter:
@@ -58,8 +56,7 @@ The converter:
 - parses Mihomo-style `.list` entries such as bare exact domains, `+.example.com`, and `DOMAIN-SUFFIX,example.com`
 - accepts bare domain lines like `example.com` or `*.example.com`
 - removes exact duplicates and drops domains or narrower suffixes already covered by a broader `domain_suffix`
-- writes the generated sing-box rule-set JSON to `--output`; the default remains under `rules/` for compatibility
-- can write additional synced sing-box JSON copies with `--compat-output`
+- writes the generated sing-box rule-set JSON to `--output`
 - can also write Mihomo domain text `.lst` output for `format: text`, `behavior: domain`
 - rejects Mihomo text output when parsed rules include keyword or regex entries, because Mihomo domain text cannot represent them
 - loads default source URLs from `category-ru.config.json`
@@ -68,7 +65,7 @@ The converter:
 Automation:
 
 - `.github/workflows/update-rule-set.yml` runs every day at `00:00` UTC and can also be started manually with `workflow_dispatch`
-- the workflow regenerates sing-box JSON and `.srs` artifacts at both `rules/sing-box/category-ru.*` and legacy `rules/category-ru.*` paths
+- the workflow regenerates sing-box JSON and `.srs` artifacts at `rules/sing-box/category-ru.*`
 - Mihomo `.lst` and `.mrs` artifacts are updated with the same source snapshot as sing-box; Mihomo generation or compile failures stop the workflow before any mixed artifact commit
 
 Run the full verification suite with:
