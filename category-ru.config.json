@@ -4,6 +4,7 @@
 		"https://raw.githubusercontent.com/hydraponique/roscomvpn-geosite/master/data/whitelist",
 		"https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ru.list",
 		"https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-gov-ru.list",
-		"https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst"
+		"https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst",
+		"https://raw.githubusercontent.com/runetfreedom/russia-domains-list/main/ru-available-only-inside"
 	]
 }
