@@ -1,4 +1,4 @@
-# category-ru rules for sing-box
+# category-ru rules for sing-box and Mihomo
 
 To install dependencies:
 
@@ -18,24 +18,37 @@ Manage source URLs in `category-ru.config.json`:
 }
 ```
 
-Then build the sing-box rule-set JSON with:
+Then build the readable rule-set artifacts with:
 
 ```bash
-bun run ./src/index.ts --output rules/category-ru.json
+bun run rule-set:generate
 bun run rule-set:format
 bun run rule-set:check
 ```
 
+This writes:
+
+- `rules/sing-box/category-ru.json` for sing-box
+- `rules/category-ru.json` as a compatibility copy for existing sing-box users
+- `rules/mihomo/category-ru.lst` for Mihomo rule providers with `format: text` and `behavior: domain`
+
 To compile that JSON rule-set to sing-box's binary `.srs` format:
 
 ```bash
-sing-box rule-set compile --output rules/category-ru.srs rules/category-ru.json
+sing-box rule-set compile --output rules/sing-box/category-ru.srs rules/sing-box/category-ru.json
+cp rules/sing-box/category-ru.srs rules/category-ru.srs
+```
+
+To compile the Mihomo text rule-set to Mihomo's binary `.mrs` format:
+
+```bash
+mihomo convert-ruleset domain text rules/mihomo/category-ru.lst rules/mihomo/category-ru.mrs
 ```
 
 You can still override the config from the CLI when needed:
 
 ```bash
-bun run ./src/index.ts --url https://example.com/list-1 --url https://example.com/list-2 --output output/category-ru.json
+bun run ./src/index.ts --url https://example.com/list-1 --url https://example.com/list-2 --output output/sing-box/category-ru.json --compat-output output/category-ru.json --mihomo-output output/mihomo/category-ru.lst
 ```
 
 The converter:
@@ -45,14 +58,18 @@ The converter:
 - parses Mihomo-style `.list` entries such as bare exact domains, `+.example.com`, and `DOMAIN-SUFFIX,example.com`
 - accepts bare domain lines like `example.com` or `*.example.com`
 - removes exact duplicates and drops domains or narrower suffixes already covered by a broader `domain_suffix`
-- writes the generated rule-set JSON under `rules/` by default
+- writes the generated sing-box rule-set JSON to `--output`; the default remains under `rules/` for compatibility
+- can write additional synced sing-box JSON copies with `--compat-output`
+- can also write Mihomo domain text `.lst` output for `format: text`, `behavior: domain`
+- rejects Mihomo text output when parsed rules include keyword or regex entries, because Mihomo domain text cannot represent them
 - loads default source URLs from `category-ru.config.json`
 - prints duplicate and unsupported-line summaries to the console
 
 Automation:
 
 - `.github/workflows/update-rule-set.yml` runs every day at `00:00` UTC and can also be started manually with `workflow_dispatch`
-- the workflow regenerates `rules/category-ru.json`, formats and verifies it with Biome, compiles `rules/category-ru.srs`, and commits the updated files back to the repository
+- the workflow regenerates sing-box JSON and `.srs` artifacts at both `rules/sing-box/category-ru.*` and legacy `rules/category-ru.*` paths
+- Mihomo `.lst` and `.mrs` artifacts are updated with the same source snapshot as sing-box; Mihomo generation or compile failures stop the workflow before any mixed artifact commit
 
 Run the full verification suite with:
 

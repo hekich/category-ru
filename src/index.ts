@@ -1,5 +1,6 @@
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export const DEFAULT_SOURCE_CONFIG_PATH = "category-ru.config.json";
 
@@ -92,8 +93,23 @@ export type ConversionResult = MergeResult & {
 type CliOptions = {
 	sourceUrls: string[];
 	outputPath?: string;
+	compatOutputPaths: string[];
+	mihomoOutputPath?: string;
 	version: RuleSetVersion;
 	helpRequested: boolean;
+};
+
+type TextFileTargetStat = {
+	isDirectory: () => boolean;
+};
+
+export type WriteTextFilesOperations = {
+	createTemporarySuffix: () => string;
+	mkdir: typeof mkdir;
+	rename: typeof rename;
+	rm: typeof rm;
+	stat: (path: string) => Promise<TextFileTargetStat>;
+	write: (path: string, content: string) => Promise<unknown>;
 };
 
 const BARE_DOMAIN_PATTERN =
@@ -594,6 +610,50 @@ export const buildSingBoxRuleSet = (
 	};
 };
 
+const MIHOMO_DOMAIN_TEXT_UNSUPPORTED_FIELDS = [
+	"domain_keyword",
+	"domain_regex",
+] as const;
+
+const MIHOMO_DOMAIN_TEXT_LINE_FORMATTERS = {
+	domain: (value: string) => value,
+	domain_suffix: (value: string) => `+.${value}`,
+} as const satisfies Partial<Record<RuleField, (value: string) => string>>;
+
+const getMihomoDomainTextUnsupportedFields = (
+	ruleValues: GroupedRuleValues,
+): (typeof MIHOMO_DOMAIN_TEXT_UNSUPPORTED_FIELDS)[number][] =>
+	MIHOMO_DOMAIN_TEXT_UNSUPPORTED_FIELDS.filter(
+		(field) => ruleValues[field].length > 0,
+	);
+
+const assertMihomoDomainTextSupported = (
+	ruleValues: GroupedRuleValues,
+): void => {
+	const unsupportedFields = getMihomoDomainTextUnsupportedFields(ruleValues);
+
+	if (unsupportedFields.length > 0) {
+		throw new Error(
+			`Mihomo domain text output cannot represent rule field(s): ${unsupportedFields.join(", ")}.`,
+		);
+	}
+};
+
+export const buildMihomoDomainTextRuleSet = (
+	ruleValues: GroupedRuleValues,
+): string => {
+	assertMihomoDomainTextSupported(ruleValues);
+
+	const lines = Object.entries(MIHOMO_DOMAIN_TEXT_LINE_FORMATTERS).flatMap(
+		([field, formatLine]) =>
+			ruleValues[field as keyof typeof MIHOMO_DOMAIN_TEXT_LINE_FORMATTERS].map(
+				formatLine,
+			),
+	);
+
+	return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+};
+
 export const convertDomainLists = (
 	sources: ReadonlyArray<{ sourceUrl: string; content: string }>,
 	version: RuleSetVersion,
@@ -643,9 +703,77 @@ const fetchSource = async (
 	};
 };
 
-export const writeRuleSet = async (
+const formatResolvedPath = (path: string): string => {
+	const relativePath = relative(process.cwd(), path);
+	return (relativePath.length > 0 ? relativePath : ".").split(sep).join("/");
+};
+
+const isNestedPath = (path: string, possibleParentPath: string): boolean => {
+	const relativePath = relative(possibleParentPath, path);
+	const escapedParent =
+		relativePath === ".." || relativePath.startsWith(`..${sep}`);
+
+	return relativePath.length > 0 && !escapedParent && !isAbsolute(relativePath);
+};
+
+type NamedOutputPath = {
+	optionName: string;
+	path: string;
+};
+
+const assertDistinctOutputPaths = (
 	outputPath: string,
-	ruleSet: SingBoxRuleSet,
+	mihomoOutputPath: string | undefined,
+	compatOutputPaths: readonly string[],
+): void => {
+	const outputPaths: NamedOutputPath[] = [
+		{ optionName: "--output", path: outputPath },
+		...compatOutputPaths.map((path) => ({
+			optionName: "--compat-output",
+			path,
+		})),
+	];
+
+	if (mihomoOutputPath) {
+		outputPaths.push({
+			optionName: "--mihomo-output",
+			path: mihomoOutputPath,
+		});
+	}
+
+	for (let leftIndex = 0; leftIndex < outputPaths.length - 1; leftIndex += 1) {
+		const leftOutput = outputPaths[leftIndex] as NamedOutputPath;
+		const resolvedLeftPath = resolve(leftOutput.path);
+
+		for (
+			let rightIndex = leftIndex + 1;
+			rightIndex < outputPaths.length;
+			rightIndex += 1
+		) {
+			const rightOutput = outputPaths[rightIndex] as NamedOutputPath;
+			const resolvedRightPath = resolve(rightOutput.path);
+
+			if (resolvedLeftPath === resolvedRightPath) {
+				throw new Error(
+					`Output paths must be different: ${leftOutput.optionName} and ${rightOutput.optionName} both resolve to ${formatResolvedPath(resolvedLeftPath)}.`,
+				);
+			}
+
+			if (
+				isNestedPath(resolvedLeftPath, resolvedRightPath) ||
+				isNestedPath(resolvedRightPath, resolvedLeftPath)
+			) {
+				throw new Error(
+					`Output paths must not overlap: ${leftOutput.optionName} resolves to ${formatResolvedPath(resolvedLeftPath)} and ${rightOutput.optionName} resolves to ${formatResolvedPath(resolvedRightPath)}.`,
+				);
+			}
+		}
+	}
+};
+
+export const writeTextFile = async (
+	outputPath: string,
+	content: string,
 ): Promise<void> => {
 	const outputDirectory = dirname(outputPath);
 
@@ -653,20 +781,221 @@ export const writeRuleSet = async (
 		await mkdir(outputDirectory, { recursive: true });
 	}
 
-	await Bun.write(outputPath, `${JSON.stringify(ruleSet, null, "\t")}\n`);
+	await Bun.write(outputPath, content);
+};
+
+const isNotFoundError = (error: unknown): boolean =>
+	isRecord(error) && error.code === "ENOENT";
+
+const formatErrorMessage = (error: unknown): string =>
+	error instanceof Error ? error.message : String(error);
+
+const assertTextFileTarget = async (
+	outputPath: string,
+	operations: WriteTextFilesOperations,
+): Promise<void> => {
+	try {
+		const outputPathStat = await operations.stat(outputPath);
+
+		if (outputPathStat.isDirectory()) {
+			throw new Error(
+				`Output path must be a file, got directory: ${formatResolvedPath(resolve(outputPath))}.`,
+			);
+		}
+	} catch (error) {
+		if (isNotFoundError(error)) {
+			return;
+		}
+
+		throw error;
+	}
+};
+
+const pathExists = async (
+	path: string,
+	operations: WriteTextFilesOperations,
+): Promise<boolean> => {
+	try {
+		await operations.stat(path);
+		return true;
+	} catch (error) {
+		if (isNotFoundError(error)) {
+			return false;
+		}
+
+		throw error;
+	}
+};
+
+const defaultWriteTextFilesOperations: WriteTextFilesOperations = {
+	createTemporarySuffix: () => `${process.pid}.${randomUUID()}`,
+	mkdir,
+	rename,
+	rm,
+	stat,
+	write: async (path, content) => Bun.write(path, content),
+};
+
+type PreparedTextFileWrite = {
+	outputPath: string;
+	temporaryPath: string;
+	backupPath: string;
+};
+
+export const writeTextFiles = async (
+	files: readonly { outputPath: string; content: string }[],
+	operations: WriteTextFilesOperations = defaultWriteTextFilesOperations,
+): Promise<void> => {
+	const preparedWrites: PreparedTextFileWrite[] = [];
+	const backupWrites: PreparedTextFileWrite[] = [];
+	const installedOutputPaths: string[] = [];
+	const temporarySuffix = operations.createTemporarySuffix();
+
+	try {
+		for (const file of files) {
+			const outputDirectory = dirname(file.outputPath);
+
+			if (outputDirectory !== ".") {
+				await operations.mkdir(outputDirectory, { recursive: true });
+			}
+		}
+
+		for (const file of files) {
+			await assertTextFileTarget(file.outputPath, operations);
+		}
+
+		for (const [index, file] of files.entries()) {
+			const temporaryPath = `${file.outputPath}.${temporarySuffix}.${index}.tmp`;
+			const backupPath = `${file.outputPath}.${temporarySuffix}.${index}.backup`;
+
+			preparedWrites.push({
+				outputPath: file.outputPath,
+				temporaryPath,
+				backupPath,
+			});
+			await operations.write(temporaryPath, file.content);
+		}
+
+		for (const preparedWrite of preparedWrites) {
+			if (await pathExists(preparedWrite.outputPath, operations)) {
+				await operations.rename(
+					preparedWrite.outputPath,
+					preparedWrite.backupPath,
+				);
+				backupWrites.push(preparedWrite);
+			}
+		}
+
+		for (const preparedWrite of preparedWrites) {
+			await operations.rename(
+				preparedWrite.temporaryPath,
+				preparedWrite.outputPath,
+			);
+			installedOutputPaths.push(preparedWrite.outputPath);
+		}
+
+		await Promise.allSettled(
+			backupWrites.map((preparedWrite) =>
+				operations.rm(preparedWrite.backupPath, {
+					force: true,
+					recursive: false,
+				}),
+			),
+		);
+	} catch (error) {
+		await Promise.allSettled(
+			installedOutputPaths
+				.reverse()
+				.map((outputPath) =>
+					operations.rm(outputPath, { force: true, recursive: false }),
+				),
+		);
+
+		const unrestoredBackupPaths = new Set<string>();
+		const restoreFailures: Error[] = [];
+
+		for (const preparedWrite of backupWrites.reverse()) {
+			await operations
+				.rename(preparedWrite.backupPath, preparedWrite.outputPath)
+				.catch((restoreError: unknown) => {
+					unrestoredBackupPaths.add(preparedWrite.backupPath);
+					restoreFailures.push(
+						new Error(
+							`Failed to restore ${preparedWrite.backupPath} to ${preparedWrite.outputPath}: ${formatErrorMessage(restoreError)}`,
+							{ cause: restoreError },
+						),
+					);
+				});
+		}
+
+		await Promise.allSettled([
+			...preparedWrites.map((preparedWrite) =>
+				operations.rm(preparedWrite.temporaryPath, {
+					force: true,
+					recursive: false,
+				}),
+			),
+			...preparedWrites
+				.filter(
+					(preparedWrite) =>
+						!unrestoredBackupPaths.has(preparedWrite.backupPath),
+				)
+				.map((preparedWrite) =>
+					operations.rm(preparedWrite.backupPath, {
+						force: true,
+						recursive: false,
+					}),
+				),
+		]);
+
+		if (restoreFailures.length > 0) {
+			throw new AggregateError(
+				[error, ...restoreFailures],
+				"Failed to write text files and restore one or more backups.",
+			);
+		}
+
+		throw error;
+	}
+};
+
+export const writeRuleSet = async (
+	outputPath: string,
+	ruleSet: SingBoxRuleSet,
+): Promise<void> => {
+	await writeTextFile(outputPath, `${JSON.stringify(ruleSet, null, "\t")}\n`);
 };
 
 const formatEntryLocation = (sourceUrl: string, lineNumber: number): string =>
 	`${sourceUrl}:${lineNumber}`;
 
+const formatUnsupportedEntrySummary = (
+	unsupportedEntries: readonly UnsupportedEntry[],
+): string => {
+	const summaryLines = unsupportedEntries
+		.slice(0, 10)
+		.map(
+			(entry) =>
+				`- ${formatEntryLocation(entry.sourceUrl, entry.lineNumber)} => ${entry.rawLine.trim()}`,
+		);
+
+	if (unsupportedEntries.length > 10) {
+		summaryLines.push(`- ... ${unsupportedEntries.length - 10} more`);
+	}
+
+	return summaryLines.join("\n");
+};
+
 export const getUsageText =
 	(): string => `Usage: bun run ./src/index.ts [options] [url ...]
 
-Options:
-  -u, --url <url>       Add a source URL. Can be used multiple times.
-  -o, --output <path>   Output JSON file path.
-  -v, --version <n>     sing-box rule-set version (1-4). Default: ${DEFAULT_RULE_SET_VERSION}
-  -h, --help            Show this help message.
+	Options:
+	  -u, --url <url>              Add a source URL. Can be used multiple times.
+	  -o, --output <path>          Output sing-box JSON file path.
+	      --compat-output <path>   Additional sing-box JSON file path for compatibility.
+	      --mihomo-output <path>   Output Mihomo domain text .lst file path.
+	  -v, --version <n>            sing-box rule-set version (1-4). Default: ${DEFAULT_RULE_SET_VERSION}
+	  -h, --help                   Show this help message.
 
 If no URLs are provided, source URLs are loaded from:
 	${DEFAULT_SOURCE_CONFIG_PATH}`;
@@ -675,9 +1004,38 @@ const printUsage = (): void => {
 	console.log(getUsageText());
 };
 
+const OPTION_ARGUMENTS = new Set([
+	"-u",
+	"--url",
+	"-o",
+	"--output",
+	"--compat-output",
+	"--mihomo-output",
+	"-v",
+	"--version",
+	"-h",
+	"--help",
+]);
+
+const getOptionValue = (
+	argv: readonly string[],
+	index: number,
+	argument: string,
+): string => {
+	const value = argv[index + 1];
+
+	if (!value || OPTION_ARGUMENTS.has(value)) {
+		throw new Error(`Missing value for ${argument}.`);
+	}
+
+	return value;
+};
+
 export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 	let helpRequested = false;
 	let outputPath: string | undefined;
+	const compatOutputPaths: string[] = [];
+	let mihomoOutputPath: string | undefined;
 	let version: RuleSetVersion = DEFAULT_RULE_SET_VERSION;
 	const sourceUrls: string[] = [];
 
@@ -694,11 +1052,7 @@ export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 		}
 
 		if (argument === "-u" || argument === "--url") {
-			const value = argv[index + 1];
-
-			if (!value) {
-				throw new Error(`Missing value for ${argument}.`);
-			}
+			const value = getOptionValue(argv, index, argument);
 
 			sourceUrls.push(value);
 			index += 1;
@@ -706,23 +1060,31 @@ export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 		}
 
 		if (argument === "-o" || argument === "--output") {
-			const value = argv[index + 1];
-
-			if (!value) {
-				throw new Error(`Missing value for ${argument}.`);
-			}
+			const value = getOptionValue(argv, index, argument);
 
 			outputPath = value;
 			index += 1;
 			continue;
 		}
 
-		if (argument === "-v" || argument === "--version") {
-			const value = argv[index + 1];
+		if (argument === "--compat-output") {
+			const value = getOptionValue(argv, index, argument);
 
-			if (!value) {
-				throw new Error(`Missing value for ${argument}.`);
-			}
+			compatOutputPaths.push(value);
+			index += 1;
+			continue;
+		}
+
+		if (argument === "--mihomo-output") {
+			const value = getOptionValue(argv, index, argument);
+
+			mihomoOutputPath = value;
+			index += 1;
+			continue;
+		}
+
+		if (argument === "-v" || argument === "--version") {
+			const value = getOptionValue(argv, index, argument);
 
 			const parsedVersion = Number.parseInt(value, 10);
 
@@ -743,9 +1105,11 @@ export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 	}
 
 	return {
+		compatOutputPaths,
 		helpRequested,
 		sourceUrls,
 		outputPath,
+		mihomoOutputPath,
 		version,
 	};
 };
@@ -760,22 +1124,67 @@ export const run = async (argv: readonly string[]): Promise<void> => {
 
 	const sourceUrls = await resolveSourceUrls(options.sourceUrls);
 	const outputPath = options.outputPath ?? deriveOutputPath(sourceUrls);
+	assertDistinctOutputPaths(
+		outputPath,
+		options.mihomoOutputPath,
+		options.compatOutputPaths,
+	);
 
 	const fetchedSources = await Promise.all(
 		sourceUrls.map((sourceUrl) => fetchSource(sourceUrl)),
 	);
 	const conversionResult = convertDomainLists(fetchedSources, options.version);
 
-	await writeRuleSet(outputPath, conversionResult.ruleSet);
+	if (options.mihomoOutputPath) {
+		assertMihomoDomainTextSupported(conversionResult.ruleValues);
+	}
 
-	console.log(
-		[
-			`Fetched ${sourceUrls.length} source URL(s).`,
-			`Parsed ${conversionResult.totalParsedEntries} supported entries and kept ${conversionResult.uniqueEntryCount} unique entries.`,
-			`Detected ${conversionResult.duplicates.length} duplicate entries.`,
-			`Wrote sing-box rule-set JSON to ${outputPath}.`,
-		].join("\n"),
-	);
+	const mihomoDomainTextRuleSet = options.mihomoOutputPath
+		? buildMihomoDomainTextRuleSet(conversionResult.ruleValues)
+		: undefined;
+	const outputFiles = [
+		{
+			outputPath,
+			content: `${JSON.stringify(conversionResult.ruleSet, null, "\t")}\n`,
+		},
+	];
+
+	for (const compatOutputPath of options.compatOutputPaths) {
+		outputFiles.push({
+			outputPath: compatOutputPath,
+			content: `${JSON.stringify(conversionResult.ruleSet, null, "\t")}\n`,
+		});
+	}
+
+	if (options.mihomoOutputPath && mihomoDomainTextRuleSet !== undefined) {
+		outputFiles.push({
+			outputPath: options.mihomoOutputPath,
+			content: mihomoDomainTextRuleSet,
+		});
+	}
+
+	await writeTextFiles(outputFiles);
+
+	const summaryLines = [
+		`Fetched ${sourceUrls.length} source URL(s).`,
+		`Parsed ${conversionResult.totalParsedEntries} supported entries and kept ${conversionResult.uniqueEntryCount} unique entries.`,
+		`Detected ${conversionResult.duplicates.length} duplicate entries.`,
+		`Wrote sing-box rule-set JSON to ${outputPath}.`,
+	];
+
+	if (options.mihomoOutputPath) {
+		summaryLines.push(
+			`Wrote Mihomo domain text rule-set to ${options.mihomoOutputPath}.`,
+		);
+	}
+
+	for (const compatOutputPath of options.compatOutputPaths) {
+		summaryLines.push(
+			`Wrote compatibility sing-box rule-set JSON to ${compatOutputPath}.`,
+		);
+	}
+
+	console.log(summaryLines.join("\n"));
 
 	if (conversionResult.duplicates.length > 0) {
 		console.log("\nDuplicate examples:");
@@ -792,17 +1201,9 @@ export const run = async (argv: readonly string[]): Promise<void> => {
 
 	if (conversionResult.unsupportedEntries.length > 0) {
 		console.warn("\nUnsupported lines skipped:");
-		for (const entry of conversionResult.unsupportedEntries.slice(0, 10)) {
-			console.warn(
-				`- ${formatEntryLocation(entry.sourceUrl, entry.lineNumber)} => ${entry.rawLine.trim()}`,
-			);
-		}
-
-		if (conversionResult.unsupportedEntries.length > 10) {
-			console.warn(
-				`- ... ${conversionResult.unsupportedEntries.length - 10} more`,
-			);
-		}
+		console.warn(
+			formatUnsupportedEntrySummary(conversionResult.unsupportedEntries),
+		);
 	}
 };
 
