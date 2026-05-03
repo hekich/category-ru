@@ -26,21 +26,35 @@ describe("CLI metadata", () => {
 		expect(getUsageText()).toContain(
 			"bun run ./src/index.ts [options] [url ...]",
 		);
-		expect(getUsageText()).toContain("--compat-output <path>");
+		expect(getUsageText()).toContain("--output <path>");
+		expect(getUsageText()).toContain("--mihomo-output <path>");
+		expect(getUsageText()).not.toContain("--compat-output");
 	});
 
 	test("keeps package metadata aligned with the executable entrypoint", async () => {
 		const packageJson = JSON.parse(await readFile("package.json", "utf8")) as {
 			module?: string;
+			scripts?: Record<string, string>;
 		};
 
 		expect(packageJson.module).toBe("./src/index.ts");
 		expect(await Bun.file(packageJson.module ?? "").exists()).toBe(true);
+		expect(packageJson.scripts?.["rule-set:generate"]).toContain(
+			"rules/sing-box/category-ru.json",
+		);
+		expect(packageJson.scripts?.["rule-set:generate"]).not.toContain(
+			"--compat-output",
+		);
+		expect(packageJson.scripts?.["rule-set:format"]).not.toContain(
+			"rules/category-ru.json",
+		);
+		expect(packageJson.scripts?.["rule-set:check"]).not.toContain(
+			"rules/category-ru.json",
+		);
 	});
 
 	test("parses help requests without requiring sources", () => {
 		expect(parseCliArgs(["--help"])).toEqual({
-			compatOutputPaths: [],
 			helpRequested: true,
 			mihomoOutputPath: undefined,
 			outputPath: undefined,
@@ -56,13 +70,10 @@ describe("CLI metadata", () => {
 				"https://example.test/list",
 				"--output",
 				"rules/sing-box/category-ru.json",
-				"--compat-output",
-				"rules/category-ru.json",
 				"--mihomo-output",
 				"rules/mihomo/category-ru.lst",
 			]),
 		).toEqual({
-			compatOutputPaths: ["rules/category-ru.json"],
 			helpRequested: false,
 			mihomoOutputPath: "rules/mihomo/category-ru.lst",
 			outputPath: "rules/sing-box/category-ru.json",
@@ -76,19 +87,16 @@ describe("CLI metadata", () => {
 			parseCliArgs([
 				"--output",
 				"rules/sing-box/category-ru.json",
-				"--compat-output",
-				"--mihomo-output",
-			]),
-		).toThrow("Missing value for --compat-output.");
-
-		expect(() =>
-			parseCliArgs([
-				"--output",
-				"rules/sing-box/category-ru.json",
 				"--mihomo-output",
 				"--version",
 			]),
 		).toThrow("Missing value for --mihomo-output.");
+	});
+
+	test("rejects compatibility output paths as unsupported", () => {
+		expect(() =>
+			parseCliArgs(["--compat-output", "output/compat.json"]),
+		).toThrow("Unknown argument: --compat-output");
 	});
 
 	test("keeps sing-box workflow updates independent from Mihomo artifacts", async () => {
@@ -97,7 +105,10 @@ describe("CLI metadata", () => {
 			"utf8",
 		);
 
-		expect(workflow).toContain("LEGACY_RULE_SET_JSON");
+		expect(workflow).not.toContain("LEGACY_RULE_SET_JSON");
+		expect(workflow).not.toContain("LEGACY_RULE_SET_BINARY");
+		expect(workflow).not.toContain("--compat-output");
+		expect(workflow).not.toContain("Copy compatibility sing-box binary");
 		expect(workflow.indexOf("Compile rule-set to binary .srs")).toBeLessThan(
 			workflow.indexOf("Install Mihomo CLI"),
 		);
@@ -109,8 +120,10 @@ describe("CLI metadata", () => {
 				(line) => line.includes("git add") && line.includes("RULE_SET_JSON"),
 			);
 		expect(singBoxGitAddLine).toContain("RULE_SET_BINARY");
-		expect(singBoxGitAddLine).toContain("LEGACY_RULE_SET_JSON");
-		expect(singBoxGitAddLine).toContain("LEGACY_RULE_SET_BINARY");
+		expect(singBoxGitAddLine).toContain("MIHOMO_RULE_SET_TEXT");
+		expect(singBoxGitAddLine).toContain("MIHOMO_RULE_SET_BINARY");
+		expect(singBoxGitAddLine).not.toContain("LEGACY_RULE_SET_JSON");
+		expect(singBoxGitAddLine).not.toContain("LEGACY_RULE_SET_BINARY");
 	});
 
 	test("keeps workflow write credentials away from downloaded CLIs", async () => {
@@ -156,12 +169,12 @@ describe("parseSourceConfig", () => {
 });
 
 describe("deriveOutputPath", () => {
-	test("keeps source-derived output files in the legacy rules directory by default", () => {
+	test("keeps source-derived output files in the sing-box rules directory by default", () => {
 		const outputPath = deriveOutputPath([
 			"https://example.test/lists/category-ru.list",
 		]);
 
-		expect(outputPath).toBe("rules/category-ru.list.json");
+		expect(outputPath).toBe("rules/sing-box/category-ru.list.json");
 	});
 });
 
@@ -795,8 +808,6 @@ describe("run", () => {
 				"https://example.test/list",
 				"--output",
 				"rules/sing-box/category-ru.json",
-				"--compat-output",
-				"rules/category-ru.json",
 				"--mihomo-output",
 				"rules/mihomo/category-ru.lst",
 			]);
@@ -811,9 +822,6 @@ describe("run", () => {
 				join(tempDirectory, "rules/mihomo/category-ru.lst"),
 				"utf8",
 			);
-			const compatibilityRuleSet = JSON.parse(
-				await readFile(join(tempDirectory, "rules/category-ru.json"), "utf8"),
-			) as SingBoxRuleSet;
 
 			expect(fetchedUrls).toEqual(["https://example.test/list"]);
 			expect(singBoxRuleSet).toEqual({
@@ -824,7 +832,7 @@ describe("run", () => {
 					},
 				],
 			});
-			expect(compatibilityRuleSet).toEqual(singBoxRuleSet);
+			expect(await Bun.file("rules/category-ru.json").exists()).toBe(false);
 			expect(mihomoRuleSet).toBe("+.example.com\n");
 		} finally {
 			globalThis.fetch = previousFetch;
@@ -1055,7 +1063,7 @@ describe("run", () => {
 		}
 	});
 
-	test("rejects compatibility output paths that overlap other outputs before writing", async () => {
+	test("rejects compatibility output paths before writing", async () => {
 		const tempDirectory = await mkdtemp(join(tmpdir(), "category-ru-"));
 		const previousDirectory = process.cwd();
 		const previousFetch = globalThis.fetch;
@@ -1079,26 +1087,11 @@ describe("run", () => {
 					"--url",
 					"https://example.test/list",
 					"--output",
-					"rules/category-ru.json",
+					"output/category-ru.json",
 					"--compat-output",
-					"./rules/category-ru.json",
+					"output/compat.json",
 				]),
-			).rejects.toThrow(
-				"Output paths must be different: --output and --compat-output both resolve to rules/category-ru.json.",
-			);
-
-			await expect(
-				run([
-					"--url",
-					"https://example.test/list",
-					"--output",
-					"rules/sing-box/category-ru.json",
-					"--compat-output",
-					"rules/sing-box",
-				]),
-			).rejects.toThrow(
-				"Output paths must not overlap: --output resolves to rules/sing-box/category-ru.json and --compat-output resolves to rules/sing-box.",
-			);
+			).rejects.toThrow("Unknown argument: --compat-output");
 
 			expect(fetchCalled).toBe(false);
 			expect(await Bun.file("rules").exists()).toBe(false);

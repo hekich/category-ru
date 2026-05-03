@@ -6,7 +6,7 @@ export const DEFAULT_SOURCE_CONFIG_PATH = "category-ru.config.json";
 
 export const DEFAULT_RULE_SET_VERSION = 3;
 
-const DEFAULT_OUTPUT_DIRECTORY = "rules";
+const DEFAULT_OUTPUT_DIRECTORY = "rules/sing-box";
 
 const DEFAULT_OUTPUT_FILE = `${DEFAULT_OUTPUT_DIRECTORY}/category-ru.json`;
 
@@ -93,7 +93,6 @@ export type ConversionResult = MergeResult & {
 type CliOptions = {
 	sourceUrls: string[];
 	outputPath?: string;
-	compatOutputPaths: string[];
 	mihomoOutputPath?: string;
 	version: RuleSetVersion;
 	helpRequested: boolean;
@@ -724,14 +723,9 @@ type NamedOutputPath = {
 const assertDistinctOutputPaths = (
 	outputPath: string,
 	mihomoOutputPath: string | undefined,
-	compatOutputPaths: readonly string[],
 ): void => {
 	const outputPaths: NamedOutputPath[] = [
 		{ optionName: "--output", path: outputPath },
-		...compatOutputPaths.map((path) => ({
-			optionName: "--compat-output",
-			path,
-		})),
 	];
 
 	if (mihomoOutputPath) {
@@ -992,7 +986,6 @@ export const getUsageText =
 	Options:
 	  -u, --url <url>              Add a source URL. Can be used multiple times.
 	  -o, --output <path>          Output sing-box JSON file path.
-	      --compat-output <path>   Additional sing-box JSON file path for compatibility.
 	      --mihomo-output <path>   Output Mihomo domain text .lst file path.
 	  -v, --version <n>            sing-box rule-set version (1-4). Default: ${DEFAULT_RULE_SET_VERSION}
 	  -h, --help                   Show this help message.
@@ -1009,7 +1002,6 @@ const OPTION_ARGUMENTS = new Set([
 	"--url",
 	"-o",
 	"--output",
-	"--compat-output",
 	"--mihomo-output",
 	"-v",
 	"--version",
@@ -1034,7 +1026,6 @@ const getOptionValue = (
 export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 	let helpRequested = false;
 	let outputPath: string | undefined;
-	const compatOutputPaths: string[] = [];
 	let mihomoOutputPath: string | undefined;
 	let version: RuleSetVersion = DEFAULT_RULE_SET_VERSION;
 	const sourceUrls: string[] = [];
@@ -1063,14 +1054,6 @@ export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 			const value = getOptionValue(argv, index, argument);
 
 			outputPath = value;
-			index += 1;
-			continue;
-		}
-
-		if (argument === "--compat-output") {
-			const value = getOptionValue(argv, index, argument);
-
-			compatOutputPaths.push(value);
 			index += 1;
 			continue;
 		}
@@ -1105,7 +1088,6 @@ export const parseCliArgs = (argv: readonly string[]): CliOptions => {
 	}
 
 	return {
-		compatOutputPaths,
 		helpRequested,
 		sourceUrls,
 		outputPath,
@@ -1124,11 +1106,7 @@ export const run = async (argv: readonly string[]): Promise<void> => {
 
 	const sourceUrls = await resolveSourceUrls(options.sourceUrls);
 	const outputPath = options.outputPath ?? deriveOutputPath(sourceUrls);
-	assertDistinctOutputPaths(
-		outputPath,
-		options.mihomoOutputPath,
-		options.compatOutputPaths,
-	);
+	assertDistinctOutputPaths(outputPath, options.mihomoOutputPath);
 
 	const fetchedSources = await Promise.all(
 		sourceUrls.map((sourceUrl) => fetchSource(sourceUrl)),
@@ -1149,13 +1127,6 @@ export const run = async (argv: readonly string[]): Promise<void> => {
 		},
 	];
 
-	for (const compatOutputPath of options.compatOutputPaths) {
-		outputFiles.push({
-			outputPath: compatOutputPath,
-			content: `${JSON.stringify(conversionResult.ruleSet, null, "\t")}\n`,
-		});
-	}
-
 	if (options.mihomoOutputPath && mihomoDomainTextRuleSet !== undefined) {
 		outputFiles.push({
 			outputPath: options.mihomoOutputPath,
@@ -1175,12 +1146,6 @@ export const run = async (argv: readonly string[]): Promise<void> => {
 	if (options.mihomoOutputPath) {
 		summaryLines.push(
 			`Wrote Mihomo domain text rule-set to ${options.mihomoOutputPath}.`,
-		);
-	}
-
-	for (const compatOutputPath of options.compatOutputPaths) {
-		summaryLines.push(
-			`Wrote compatibility sing-box rule-set JSON to ${compatOutputPath}.`,
 		);
 	}
 
